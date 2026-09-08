@@ -1,0 +1,38 @@
+rules_version = '2';
+// 貼到 Firebase Console → Firestore Database → 規則 → 發布。
+// 路徑中的 health-station 要與 index.html 的 dbAppId 常數一致；
+// @health.local 要與 index.html 的帳號網域一致。兩邊改一邊，資料就讀不到。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 驗證請求者是否為該工坊的登入帳號
+    function isWorkshopUser(workshopId) {
+      return request.auth != null &&
+             request.auth.token.email == workshopId + '@health.local';
+    }
+
+    // workshop_configs 集合（工坊設定）：登入頁需在登入前讀取單位清單，故開放公開讀；內容僅名稱/圖示/顏色/啟用，無機密
+    // 寫入維持需登入；安全邊界由前端 sysadmin 密碼門（admin@health.local 的 Firebase 密碼驗證）把關
+    match /artifacts/health-station/workshop_configs/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 工坊資料路徑收窄至 data/ 子樹（patients/records/medications 均在 data/ 下）
+    // 原 {workshopId}/{document=**} 含括 encryptionKey，其 allow write 會以 OR 邏輯放行金鑰覆寫，故必須收窄
+    match /artifacts/health-station/{workshopId}/data/{document=**} {
+      allow read, write: if isWorkshopUser(workshopId);
+    }
+
+    // 加密金鑰 — 允許讀取與首次建立（CryptoHelper.init 首跑自動生成），不允許 update/delete
+    // 金鑰一旦被覆寫，所有既有加密欄位（姓名/生日）將永久無法解密
+    match /artifacts/health-station/{workshopId}/encryptionKey {
+      allow read, create: if isWorkshopUser(workshopId);
+    }
+
+    // 其他所有路徑: 全部拒絕
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
