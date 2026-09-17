@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>陽光工坊健康站 v1.0.0</title>
+  <title>陽光工坊健康站 v1.0.1</title>
   <!--
     ============================================================================
     區塊地圖 — 這個檔案怎麼讀（寫給人，也寫給你的 AI）
@@ -397,7 +397,7 @@
         <span class="login-footer-status">
           <span class="login-footer-status-dot"></span>連線正常
         </span>
-        <span class="login-footer-version" style="display:none">v1.0.0</span>
+        <span class="login-footer-version" style="display:none">v1.0.1</span>
         <button class="login-footer-admin-btn" onclick="openSysAdminMode()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           系統管理員
@@ -496,11 +496,16 @@
     var currentInput = '';
     var sysAdminInput = '';
     var sysAdminVerifying = false;
+    // v1.0.1: Firestore 工坊清單（loadWorkshops）晚於本函式執行，checkSession 時 WORKSHOPS 可能還沒有該工坊；
+    // 先記下待選工坊，等清單合併完成再由 applyPendingWorkshop() 補選
+    var pendingWorkshopId = null;
+    // 工坊 ID 格式（與 handleAddWorkshop 建立時的規則同一條）：只防路徑注入，真正的存取邊界在 Firestore rules
+    var WORKSHOP_ID_PATTERN = /^[a-z0-9-]+$/;
 
     function checkSession() {
       var params = new URLSearchParams(window.location.search);
       var ws = params.get('workshop');
-      if (ws && WORKSHOPS[ws]) {
+      if (ws && WORKSHOP_ID_PATTERN.test(ws)) {
         var sessionData = sessionStorage.getItem('ws_login_' + ws);
         if (sessionData) {
           try {
@@ -512,13 +517,25 @@
             }
           } catch(e) {}
         }
-        selectWorkshop(ws);
+        // v1.0.1: 清單尚未載入時不可呼叫 selectWorkshop（會讀 undefined.icon 而中斷），改掛待選
+        if (WORKSHOPS[ws]) selectWorkshop(ws);
+        else pendingWorkshopId = ws;
         document.getElementById('login-page').style.display = 'block';
         document.getElementById('root').style.display = 'none';
         return;
       }
       document.getElementById('login-page').style.display = 'block';
       document.getElementById('root').style.display = 'none';
+    }
+
+    // v1.0.1: 工坊清單載入完成後補選；清單裡仍沒有（ID 打錯／工坊已停用／Firestore 讀取失敗退回預設清單）
+    // 就清掉網址參數停在選擇頁，不中斷
+    function applyPendingWorkshop() {
+      var ws = pendingWorkshopId;
+      if (!ws) return;
+      pendingWorkshopId = null;
+      if (WORKSHOPS[ws]) selectWorkshop(ws);
+      else history.replaceState(null, '', window.location.pathname);
     }
 
     function selectWorkshop(id) {
@@ -741,7 +758,10 @@
       });
     }
 
-    loadWorkshops().then(renderWorkshopButtons);
+    loadWorkshops().then(workshops => {
+      renderWorkshopButtons(workshops);
+      window.applyPendingWorkshop();
+    });
 
     // 由 checkPassword() 呼叫；驗證成功呼叫 onLoginSuccess，失敗呼叫 onLoginFailed
     window.firebaseCheckPassword = async function(workshopId, pin) {
@@ -868,6 +888,11 @@
     // 【版本記錄】CHANGELOG — 版本號從此自動讀取，不再手動修改兩個地方
     // ============================================================================
     const CHANGELOG = [
+      { version: 'v1.0.1', date: '2026-09-17', changes: [
+        '[修復] 管理員新增的工坊登入後被踢回選擇頁、永遠進不去：登入頁改用工坊代號格式判斷，不再只認內建的兩個工坊；工坊清單還在載入時會先等清單到齊再開啟密碼鍵盤',
+        '[修復] 新工坊進入系統後頁面標題誤顯示預設工坊名稱：改為顯示該工坊自己的名稱',
+        '[調整] 新增工坊時的初始登入密碼欄改為只收 7 碼數字並加註說明，設成其他長度或含英文字母時會當場提醒，避免建好卻登不進去',
+      ]},
       { version: 'v1.0.0', date: '2026-09-08', changes: [
         '開源初版',
       ]},
@@ -908,11 +933,13 @@
     const dbAppId = 'health-station';
 
     // ── 工坊識別：從網址參數讀取，預設為 sunny ──
+    // v1.0.1: 改為格式驗證（與登入頁 WORKSHOP_ID_PATTERN 同一條規則），不再依賴 window.WORKSHOPS —
+    // Firestore 工坊清單是非同步載入，本模組執行時可能還沒合併進去，管理員新增的工坊會被誤判而退回預設
+    const WORKSHOP_ID_PATTERN = /^[a-z0-9-]+$/;
     const getWorkshop = () => {
       const params = new URLSearchParams(window.location.search);
       const w = params.get('workshop') || 'sunny';
-      const allowed = window.WORKSHOPS ? Object.keys(window.WORKSHOPS) : ['sunny', 'river'];
-      return allowed.includes(w) ? w : (allowed[0] || 'sunny');
+      return WORKSHOP_ID_PATTERN.test(w) ? w : 'sunny';
     };
     const workshopId = getWorkshop();
 
@@ -2025,8 +2052,8 @@
       const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7)); 
       const [reportPatientId, setReportPatientId] = useState('all');
       const [currentDate, setCurrentDate] = useState(new Date());
-      // 只認得兩個單位的硬編碼寫法；單位多於兩個時，這裡要改成從 WORKSHOPS[workshopId].name 查表
-      const appName = workshopId === 'river' ? '河岸工坊健康站' : '陽光工坊健康站'; // 依工坊切換名稱
+      // v1.0.1: 名稱改讀工坊清單，管理員新增的工坊不再被冠上預設工坊名；清單還沒載到時退回內建兩單位的判斷
+      const appName = (window.WORKSHOPS?.[workshopId]?.name || (workshopId === 'river' ? '河岸工坊' : '陽光工坊')) + '健康站';
       const [patients, setPatients] = useState([]);
       // v4.3.11: 軟刪除（含 deletedAt 欄位）的 patient — 與 patients 同一 onSnapshot 解析後 partition
       const [trashedPatients, setTrashedPatients] = useState([]);
@@ -2481,7 +2508,9 @@
       const handleAddWorkshop = async () => {
         const { id, name, icon, color, pin } = newWorkshop;
         if (!id.trim() || !name.trim() || !pin) { showAlert('資料不完整', '請填寫工坊 ID、名稱與初始密碼', 'error'); return; }
-        if (!/^[a-z0-9-]+$/.test(id)) { showAlert('格式錯誤', '工坊 ID 只能使用小寫英文、數字、連字號', 'error'); return; }
+        if (!WORKSHOP_ID_PATTERN.test(id)) { showAlert('格式錯誤', '工坊 ID 只能使用小寫英文、數字、連字號', 'error'); return; }
+        // v1.0.1: 登入鍵盤只能輸入 7 碼數字，密碼設成別的長度或含英文字母會永遠登不進去
+        if (!/^\d{7}$/.test(pin)) { showAlert('格式錯誤', '初始登入密碼必須是 7 碼數字（登入頁的數字鍵盤只收 7 碼）', 'error'); return; }
         setSysAdminLoading(true);
         try {
           await createUserWithEmailAndPassword(adminAuth, id + '@health.local', pin);
@@ -3704,9 +3733,9 @@
                                 className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm outline-none focus:border-blue-400 bg-white"/>
                             </div>
                             <div>
-                              <label className="text-xs font-bold text-blue-600 mb-1 block">初始登入密碼</label>
-                              <input type="password" value={newWorkshop.pin} onChange={e => setNewWorkshop(p => ({...p, pin: e.target.value}))}
-                                placeholder="設定初始密碼"
+                              <label className="text-xs font-bold text-blue-600 mb-1 block">初始登入密碼（7 碼數字）</label>
+                              <input type="password" inputMode="numeric" maxLength={7} value={newWorkshop.pin} onChange={e => setNewWorkshop(p => ({...p, pin: e.target.value}))}
+                                placeholder="7 碼數字"
                                 className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm outline-none focus:border-blue-400 bg-white"/>
                             </div>
                           </div>
